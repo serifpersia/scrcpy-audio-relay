@@ -1,0 +1,10 @@
+/scrcpy-audio-relay
+/scrcpy-audio-relay.exe
+/dist/
+*.test
+*.out
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
