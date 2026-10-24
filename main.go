@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,11 +24,12 @@ import (
 var index []byte
 
 type startRequest struct {
-	Serial       string `json:"serial"`
-	Codec        string `json:"codec"`
-	Buffer       int    `json:"buffer"`
-	OutputBuffer int    `json:"outputBuffer"`
-	BitRate      int    `json:"bitRate"`
+	Serial         string `json:"serial"`
+	Codec          string `json:"codec"`
+	Buffer         int    `json:"buffer"`
+	OutputBuffer   int    `json:"outputBuffer"`
+	BitRate        int    `json:"bitRate"`
+	MonitorLatency bool   `json:"monitorLatency"`
 }
 
 func (r startRequest) args() ([]string, error) {
@@ -40,7 +42,11 @@ func (r startRequest) args() ([]string, error) {
 	if r.Buffer < 1 || r.Buffer > 200 || r.OutputBuffer < 1 || r.OutputBuffer > 50 {
 		return nil, errors.New("buffer must be 1–200ms; output buffer 1–50ms")
 	}
-	args := []string{"--serial=" + r.Serial, "--no-video", "--no-control", "--no-window", "--require-audio", "--verbosity=debug", "--audio-codec=" + r.Codec, fmt.Sprintf("--audio-buffer=%d", r.Buffer), fmt.Sprintf("--audio-output-buffer=%d", r.OutputBuffer)}
+	verbosity := "info"
+	if r.MonitorLatency {
+		verbosity = "verbose"
+	}
+	args := []string{"--serial=" + r.Serial, "--no-video", "--no-control", "--no-window", "--require-audio", "--verbosity=" + verbosity, "--audio-codec=" + r.Codec, fmt.Sprintf("--audio-buffer=%d", r.Buffer), fmt.Sprintf("--audio-output-buffer=%d", r.OutputBuffer)}
 	if r.Codec == "opus" || r.Codec == "aac" {
 		if r.BitRate == 0 {
 			r.BitRate = 128
@@ -54,12 +60,87 @@ func (r startRequest) args() ([]string, error) {
 }
 
 type panel struct {
-	mu          sync.Mutex
-	cmd         *exec.Cmd
-	done        chan struct{}
-	stopping    bool
-	logs        string
-	scrcpy, adb string
+	mu             sync.Mutex
+	cmd            *exec.Cmd
+	done           chan struct{}
+	stopping       bool
+	logs           string
+	scrcpy, adb    string
+	outputBuffer   int
+	monitorLatency bool
+}
+
+const audioSampleRate = 48000
+
+var bufferingLine = regexp.MustCompile(`\[Audio\] Buffering: target=(\d+) avg=([\d.]+) cur=(\d+) compensation=(-?\d+) \(underflow=(\d+)\)`)
+
+func pipelineLatency(logs string, outputBufferMs int) map[string]float64 {
+	matches := bufferingLine.FindAllStringSubmatch(logs, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	last := matches[len(matches)-1]
+	avg, _ := strconv.ParseFloat(last[2], 64)
+	cur, _ := strconv.ParseFloat(last[3], 64)
+	regulator := avg / audioSampleRate * 1000
+	recent := matches
+	if len(recent) > 10 {
+		recent = recent[len(recent)-10:]
+	}
+	var underflow, affected float64
+	for _, report := range recent {
+		samples, _ := strconv.ParseFloat(report[5], 64)
+		underflow += samples
+		if samples > 0 {
+			affected++
+		}
+	}
+	target, _ := strconv.ParseFloat(last[1], 64)
+	return map[string]float64{
+		"targetMs":        target / audioSampleRate * 1000,
+		"reports":         float64(len(recent)),
+		"underflowMs":     underflow / audioSampleRate * 1000,
+		"affectedReports": affected,
+		"regulatorMs":     regulator,
+		"currentMs":       cur / audioSampleRate * 1000,
+		"outputMs":        float64(outputBufferMs),
+		"totalMs":         regulator + float64(outputBufferMs),
+	}
+}
+
+type stabilityStatus struct {
+	State  string `json:"state"`
+	Label  string `json:"label"`
+	Advice string `json:"advice"`
+}
+
+func stabilityAdvice(latency map[string]float64) stabilityStatus {
+	if latency == nil {
+		return stabilityStatus{"checking", "Checking", "Waiting for audio reports…"}
+	}
+	reports := int(latency["reports"])
+	target, output := int(latency["targetMs"]), int(latency["outputMs"])
+	silence := latency["underflowMs"]
+	if silence > 0 {
+		state, label, step := "unstable", "Unstable", 10
+		// shortcut: severity thresholds are heuristics; calibrate with real playback measurements.
+		if silence >= 100 || (latency["affectedReports"] >= 3 && latency["affectedReports"]*2 >= float64(reports)) {
+			state, label, step = "poor", "Poor", 30
+			output = max(output, 20)
+		} else {
+			output = max(output, 10)
+		}
+		nextTarget := min(target+step, 200)
+		advice := fmt.Sprintf("%.1f ms of inserted silence in the last %d received reports. Try target %d ms / output %d ms, then restart audio. More buffering adds delay.", silence, reports, nextTarget, output)
+		if target == 200 && output == int(latency["outputMs"]) {
+			advice = fmt.Sprintf("%.1f ms of inserted silence in the last %d received reports. Current target %d ms / output %d ms: target is already at the maximum. Buffer changes alone may not fix this.", silence, reports, target, output)
+		}
+		return stabilityStatus{state, label, advice + " If dropouts persist, check PC load and try USB to compare against Wi-Fi."}
+	}
+	if reports < 5 {
+		return stabilityStatus{"checking", "Checking", fmt.Sprintf("%d/5 received reports without underruns. Current target %d ms / output %d ms; waiting for more reports before recommending this pair.", reports, target, output)}
+	}
+	return stabilityStatus{"stable", "Stable", fmt.Sprintf("No underruns in the last %d received reports. Recommended pair: keep target %d ms / output %d ms if playback sounds good.", reports, target, output)}
 }
 
 func (p *panel) Write(b []byte) (int, error) {
@@ -180,6 +261,8 @@ func (p *panel) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.cmd, p.done = cmd, make(chan struct{})
+	p.outputBuffer = req.OutputBuffer
+	p.monitorLatency = req.MonitorLatency
 	p.logs = "Starting: scrcpy " + strings.Join(args, " ") + "\n"
 	done := p.done
 	go func() {
@@ -259,7 +342,11 @@ func main() {
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		reply(w, map[string]any{"running": p.cmd != nil, "stopping": p.stopping, "logs": p.logs})
+		var latency map[string]float64
+		if p.cmd != nil && p.monitorLatency {
+			latency = pipelineLatency(p.logs, p.outputBuffer)
+		}
+		reply(w, map[string]any{"running": p.cmd != nil, "stopping": p.stopping, "logs": p.logs, "latency": latency, "monitorLatency": p.monitorLatency, "stability": stabilityAdvice(latency)})
 	})
 	server := &http.Server{Addr: *addr, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host {

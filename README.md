@@ -14,7 +14,8 @@ Use `-scrcpy` and `-adb` to specify executable paths. Use `-listen :8080` for tr
 
 - Raw PCM, Opus, AAC and FLAC codecs; bitrate selection for Opus/AAC.
 - Target and output buffers default to **60ms / 10ms**. Restart audio to apply changes.
-- Session logs and an on-demand ADB round-trip check.
+- Session logs, optional live host-pipeline latency monitoring (scrcpy audio queue + requested output buffer), and an on-demand ADB round-trip check. Enable monitoring before starting audio to use verbose logging; otherwise logging stays at info level.
+- With monitoring enabled, playback stability shows green (stable), amber (unstable), or red (poor) based on the last 10 received audio reports, and suggests a target/output buffer pair to test after restarting. Suggestions are heuristics, not a measured optimum; reports cannot identify the cause or detect every audible problem.
 
 Lower buffers reduce nominal buffering but can cause dropouts. The buffer estimate and ADB round trip do not measure end-to-end audio latency.
 
