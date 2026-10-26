@@ -182,9 +182,10 @@ type audioDevice struct {
 }
 
 type audioControl struct {
-	Name   string `json:"name"`
-	Volume int    `json:"volume"`
-	Muted  bool   `json:"muted"`
+	Name    string `json:"name"`
+	Volume  int    `json:"volume"`
+	Muted   bool   `json:"muted"`
+	CanMute bool   `json:"canMute"`
 }
 
 func reply(w http.ResponseWriter, v any) {
@@ -269,6 +270,7 @@ type volumeRequest struct {
 	Device  string `json:"device"`
 	Control string `json:"control"`
 	Volume  int    `json:"volume"`
+	Muted   *bool  `json:"muted"`
 }
 
 func (p *panel) volume(w http.ResponseWriter, r *http.Request) {
@@ -287,11 +289,17 @@ func (p *panel) volume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid mixer control", 400)
 		return
 	}
-	if req.Volume < 0 || req.Volume > 100 {
+	if req.Muted == nil && (req.Volume < 0 || req.Volume > 100) {
 		http.Error(w, "volume must be 0–100%", 400)
 		return
 	}
-	if err := setAudioVolume(req.Device, req.Control, req.Volume); err != nil {
+	var err error
+	if req.Muted != nil {
+		err = setAudioMute(req.Device, req.Control, *req.Muted)
+	} else {
+		err = setAudioVolume(req.Device, req.Control, req.Volume)
+	}
+	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}

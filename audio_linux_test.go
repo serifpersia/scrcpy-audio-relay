@@ -30,3 +30,20 @@ func TestAudioDevices(t *testing.T) {
 		t.Fatal("expected device without CARD= to fail")
 	}
 }
+
+func TestAudioControlMuteSupport(t *testing.T) {
+	for _, tc := range []struct {
+		output  string
+		muted   bool
+		canMute bool
+	}{
+		{"Simple mixer control 'Master',0\n  Playback 80 [80%] [on]\n", false, true},
+		{"Simple mixer control 'Master',0\n  Playback 0 [0%] [off]\n", true, true},
+		{"Simple mixer control 'PCM',0\n  Playback 80 [80%] [80.00dB]\n", false, false},
+	} {
+		got := parseAudioControl(tc.output, "test")
+		if got.Muted != tc.muted || got.CanMute != tc.canMute {
+			t.Fatalf("output %q: got %+v", tc.output, got)
+		}
+	}
+}

@@ -12,6 +12,10 @@ func setAudioVolume(string, string, int) error {
 	return errors.New("audio controls are not supported on this platform")
 }
 
+func setAudioMute(string, string, bool) error {
+	return errors.New("audio mute is not supported on this platform")
+}
+
 func applyAudioDevice(string) error { return nil }
 
 func audioEnv(string) []string { return nil }

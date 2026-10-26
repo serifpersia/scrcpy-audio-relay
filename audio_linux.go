@@ -18,6 +18,7 @@ var (
 	mixerControlLine = regexp.MustCompile(`^Simple mixer control '(.+)',\d+$`)
 	percentLine      = regexp.MustCompile(`\[(\d+)%\]`)
 	cardLine         = regexp.MustCompile(`(?:^|:)CARD=([^,]+)`)
+	muteSwitchLine   = regexp.MustCompile(`\[(on|off)\]`)
 )
 
 func parseAplay(output string) []audioDevice {
@@ -74,20 +75,27 @@ func audioControlValue(card, name string) (audioControl, bool) {
 	if err != nil {
 		return audioControl{}, false
 	}
-	text := string(out)
+	return parseAudioControl(string(out), name), true
+}
+
+func parseAudioControl(text, name string) audioControl {
 	m := percentLine.FindStringSubmatch(text)
 	if m == nil || !strings.Contains(text, "Playback") {
-		return audioControl{}, false
+		return audioControl{}
 	}
 	volume, _ := strconv.Atoi(m[1])
 	muted := false
+	canMute := false
 	for _, line := range strings.Split(text, "\n") {
 		if strings.Contains(line, "Playback") {
-			muted = strings.Contains(line, "[off]")
+			if strings.Contains(line, "[on]") || strings.Contains(line, "[off]") {
+				canMute = true
+				muted = strings.Contains(line, "[off]")
+			}
 			break
 		}
 	}
-	return audioControl{Name: name, Volume: volume, Muted: muted}, true
+	return audioControl{Name: name, Volume: volume, Muted: muted, CanMute: canMute}
 }
 
 func audioControls(device string) []audioControl {
@@ -130,6 +138,28 @@ func setAudioVolume(device, control string, volume int) error {
 		return errors.New(message)
 	}
 	exec.CommandContext(ctx, "amixer", amixerArgs(card, "sset", control, "unmute")...).Run()
+	return nil
+}
+
+func setAudioMute(device, control string, muted bool) error {
+	card, err := audioCard(device)
+	if err != nil {
+		return err
+	}
+	action := "unmute"
+	if muted {
+		action = "mute"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "amixer", amixerArgs(card, "sset", control, action)...).CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		if message == "" {
+			message = err.Error()
+		}
+		return errors.New(message)
+	}
 	return nil
 }
 

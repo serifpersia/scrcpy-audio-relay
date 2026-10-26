@@ -181,7 +181,7 @@ func audioControls(device string) []audioControl {
 		if err := aev.GetMute(&muted); err != nil {
 			return err
 		}
-		result = append(result, audioControl{Name: "Master", Volume: int(level*100 + 0.5), Muted: muted})
+		result = append(result, audioControl{Name: "Master", Volume: int(level*100 + 0.5), Muted: muted, CanMute: true})
 		return nil
 	})
 	if err != nil {
@@ -215,6 +215,30 @@ func setAudioVolume(device, control string, volume int) error {
 		}
 		aev.SetMute(false, nil)
 		return nil
+	})
+}
+
+func setAudioMute(device, control string, muted bool) error {
+	if control != "Master" {
+		return errors.New("unsupported mixer control")
+	}
+	return withCOM(func() error {
+		mmde, err := deviceEnumerator()
+		if err != nil {
+			return err
+		}
+		defer mmde.Release()
+		mmd, err := findDevice(mmde, device)
+		if err != nil {
+			return err
+		}
+		defer mmd.Release()
+		aev, err := endpointVolume(mmd)
+		if err != nil {
+			return err
+		}
+		defer aev.Release()
+		return aev.SetMute(muted, nil)
 	})
 }
 
