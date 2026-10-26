@@ -37,13 +37,16 @@ func TestAudioControlMuteSupport(t *testing.T) {
 		muted   bool
 		canMute bool
 	}{
-		{"Simple mixer control 'Master',0\n  Playback 80 [80%] [on]\n", false, true},
-		{"Simple mixer control 'Master',0\n  Playback 0 [0%] [off]\n", true, true},
-		{"Simple mixer control 'PCM',0\n  Playback 80 [80%] [80.00dB]\n", false, false},
+		{"Simple mixer control 'Master',0\n  Capabilities: pvolume pvolume-joined pswitch pswitch-joined\n  Playback channels: Mono\n  Mono: Playback 87 [100%] [0.00dB] [on]\n", false, true},
+		{"Simple mixer control 'Speaker',0\n  Capabilities: pvolume pswitch\n  Playback channels: Front Left - Front Right\n  Mono:\n  Front Left: Playback 0 [0%] [-65.25dB] [off]\n  Front Right: Playback 0 [0%] [-65.25dB] [off]\n", true, true},
+		{"Simple mixer control 'PCM',0\n  Capabilities: pvolume\n  Playback channels: Mono\n  Mono: Playback 80 [80%] [80.00dB]\n", false, false},
 	} {
 		got := parseAudioControl(tc.output, "test")
 		if got.Muted != tc.muted || got.CanMute != tc.canMute {
 			t.Fatalf("output %q: got %+v", tc.output, got)
 		}
+	}
+	if !muteSwitchLine.MatchString("  Capabilities: pvolume pswitch\n") {
+		t.Fatal("expected ALSA pswitch capability to be detected")
 	}
 }

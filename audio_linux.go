@@ -19,6 +19,7 @@ var (
 	percentLine      = regexp.MustCompile(`\[(\d+)%\]`)
 	cardLine         = regexp.MustCompile(`(?:^|:)CARD=([^,]+)`)
 	muteSwitchLine   = regexp.MustCompile(`\[(on|off)\]`)
+	playbackMuteLine = regexp.MustCompile(`(?m)^\s*(?:Mono|Front Left|Front Right): Playback.*\[(on|off)\]`)
 )
 
 func parseAplay(output string) []audioDevice {
@@ -84,17 +85,9 @@ func parseAudioControl(text, name string) audioControl {
 		return audioControl{}
 	}
 	volume, _ := strconv.Atoi(m[1])
-	muted := false
-	canMute := false
-	for _, line := range strings.Split(text, "\n") {
-		if strings.Contains(line, "Playback") {
-			if strings.Contains(line, "[on]") || strings.Contains(line, "[off]") {
-				canMute = true
-				muted = strings.Contains(line, "[off]")
-			}
-			break
-		}
-	}
+	state := playbackMuteLine.FindStringSubmatch(text)
+	canMute := strings.Contains(text, "pswitch") && state != nil
+	muted := canMute && state[1] == "off"
 	return audioControl{Name: name, Volume: volume, Muted: muted, CanMute: canMute}
 }
 
