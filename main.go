@@ -26,6 +26,8 @@ var index []byte
 type startRequest struct {
 	Serial         string `json:"serial"`
 	Codec          string `json:"codec"`
+	AudioSource    string `json:"audioSource"`
+	AudioDevice    string `json:"audioDevice"`
 	Buffer         int    `json:"buffer"`
 	OutputBuffer   int    `json:"outputBuffer"`
 	BitRate        int    `json:"bitRate"`
@@ -39,6 +41,16 @@ func (r startRequest) args() ([]string, error) {
 	if r.Codec != "raw" && r.Codec != "opus" && r.Codec != "aac" && r.Codec != "flac" {
 		return nil, errors.New("unsupported codec")
 	}
+	source := r.AudioSource
+	if source == "" {
+		source = "output"
+	}
+	if source != "output" && source != "playback" {
+		return nil, errors.New("unsupported audio source")
+	}
+	if len(r.AudioDevice) > 512 || strings.ContainsAny(r.AudioDevice, "\r\n\t") {
+		return nil, errors.New("invalid audio device")
+	}
 	if r.Buffer < 1 || r.Buffer > 200 || r.OutputBuffer < 1 || r.OutputBuffer > 50 {
 		return nil, errors.New("buffer must be 1–200ms; output buffer 1–50ms")
 	}
@@ -46,7 +58,7 @@ func (r startRequest) args() ([]string, error) {
 	if r.MonitorLatency {
 		verbosity = "verbose"
 	}
-	args := []string{"--serial=" + r.Serial, "--no-video", "--no-control", "--no-window", "--require-audio", "--verbosity=" + verbosity, "--audio-codec=" + r.Codec, fmt.Sprintf("--audio-buffer=%d", r.Buffer), fmt.Sprintf("--audio-output-buffer=%d", r.OutputBuffer)}
+	args := []string{"--serial=" + r.Serial, "--no-video", "--no-control", "--no-window", "--require-audio", "--verbosity=" + verbosity, "--audio-source=" + source, "--audio-codec=" + r.Codec, fmt.Sprintf("--audio-buffer=%d", r.Buffer), fmt.Sprintf("--audio-output-buffer=%d", r.OutputBuffer)}
 	if r.Codec == "opus" || r.Codec == "aac" {
 		if r.BitRate == 0 {
 			r.BitRate = 128
@@ -164,6 +176,17 @@ func devices(output string) []string {
 	return result
 }
 
+type audioDevice struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+type audioControl struct {
+	Name   string `json:"name"`
+	Volume int    `json:"volume"`
+	Muted  bool   `json:"muted"`
+}
+
 func reply(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -233,6 +256,48 @@ func (p *panel) latency(w http.ResponseWriter, r *http.Request) {
 	reply(w, map[string]any{"averageMs": float64(total) / float64(time.Millisecond) / 5, "samples": 5})
 }
 
+func (p *panel) audio(w http.ResponseWriter, r *http.Request) {
+	device := r.URL.Query().Get("device")
+	if len(device) > 512 || strings.ContainsAny(device, "\r\n\t") {
+		http.Error(w, "invalid audio device", 400)
+		return
+	}
+	reply(w, map[string]any{"devices": audioDevices(), "controls": audioControls(device)})
+}
+
+type volumeRequest struct {
+	Device  string `json:"device"`
+	Control string `json:"control"`
+	Volume  int    `json:"volume"`
+}
+
+func (p *panel) volume(w http.ResponseWriter, r *http.Request) {
+	var req volumeRequest
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if len(req.Device) > 512 || strings.ContainsAny(req.Device, "\r\n\t") {
+		http.Error(w, "invalid audio device", 400)
+		return
+	}
+	if req.Control == "" || len(req.Control) > 64 || strings.ContainsAny(req.Control, "\r\n") {
+		http.Error(w, "invalid mixer control", 400)
+		return
+	}
+	if req.Volume < 0 || req.Volume > 100 {
+		http.Error(w, "volume must be 0–100%", 400)
+		return
+	}
+	if err := setAudioVolume(req.Device, req.Control, req.Volume); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	reply(w, map[string]bool{"ok": true})
+}
+
 func (p *panel) start(w http.ResponseWriter, r *http.Request) {
 	var req startRequest
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
@@ -252,8 +317,13 @@ func (p *panel) start(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "already running or stopping", 409)
 		return
 	}
+	if err := applyAudioDevice(req.AudioDevice); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
 	cmd := exec.Command(p.scrcpy, args...)
 	cmd.Env = append(os.Environ(), "ADB="+p.adb)
+	cmd.Env = append(cmd.Env, audioEnv(req.AudioDevice)...)
 	cmd.Stdout, cmd.Stderr = p, p
 	configureProcess(cmd)
 	if err := cmd.Start(); err != nil {
@@ -332,6 +402,8 @@ func main() {
 	mux.HandleFunc("POST /api/start", p.start)
 	mux.HandleFunc("POST /api/connect", p.connect)
 	mux.HandleFunc("GET /api/latency", p.latency)
+	mux.HandleFunc("GET /api/audio", p.audio)
+	mux.HandleFunc("POST /api/audio/volume", p.volume)
 	mux.HandleFunc("POST /api/stop", func(w http.ResponseWriter, r *http.Request) {
 		if err := p.stop(); err != nil {
 			http.Error(w, err.Error(), 500)

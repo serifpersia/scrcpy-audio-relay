@@ -22,6 +22,27 @@ func TestMonitoringVerbosity(t *testing.T) {
 	}
 }
 
+func TestAudioSource(t *testing.T) {
+	for _, source := range []string{"", "output", "playback"} {
+		req := startRequest{Serial: "device", Codec: "raw", AudioSource: source, Buffer: 60, OutputBuffer: 10}
+		args, err := req.args()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "output"
+		if source != "" {
+			want = source
+		}
+		if !strings.Contains(strings.Join(args, " "), "--audio-source="+want) {
+			t.Fatalf("source=%q: expected %s in %v", source, want, args)
+		}
+	}
+	req := startRequest{Serial: "device", Codec: "raw", AudioSource: "mic", Buffer: 60, OutputBuffer: 10}
+	if _, err := req.args(); err == nil {
+		t.Fatal("expected unsupported audio source to fail")
+	}
+}
+
 func TestPipelineLatency(t *testing.T) {
 	logs := "VERBOSE: [Audio] Buffering: target=2880 avg=2400.0 cur=2880 compensation=0 (underflow=0)\n" +
 		"VERBOSE: [Audio] Buffering: target=2880 avg=2880.0 cur=2880 compensation=0 (underflow=0)\n"
